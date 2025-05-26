@@ -19,7 +19,7 @@ class ImgUtil:
 
     def _transform_pixels(self, map_pixel_fn, dst_size=None):
         """
-        Build a new RGB image of size dst_size (or same as source).
+        Returns a new RGB image
         For each destination coordinate (dx, dy):
             1. Call map_pixel_fn(dx, dy, self)
             2. Expect it to return an (r,g,b) tuple
@@ -50,9 +50,9 @@ class ImgUtil:
     def binary(self, threshold):
         def to_binary(x, y, util):
             r, g, b = util.pixels[x, y]
-            gray = (r + g + b) // 3
+            avg = (r + g + b) // 3
 
-            if gray >= threshold:
+            if avg >= threshold:
                 return 0xFF, 0xFF, 0xFF
             else:
                 return 0x00, 0x00, 0x00
@@ -106,6 +106,9 @@ class ImgUtil:
                 h = ((r - g) / delta) + 4
 
             h = h * 60
+
+            # Comment in prod - drastically slows down script if image is big
+            # print(f"RGB: {util.pixels[x, y]}, HSV:{h}, {s}, {l}")
 
             # Scale into 0–255 for storage
             h8 = int(round(h / 360 * 255))
@@ -196,69 +199,126 @@ class ImgUtil:
         return self._transform_pixels(to_rotate, dst_size)
 
     def rotate_on_point(self, angle, pivot):
-
         """
         Rotate the image by 'angle' degrees around 'pivot'=(px,py),
-        expanding the canvas to fit the full rotated content and filling
-        empty areas with black using nearest-neighbor sampling.
+        filling empty areas with black, using nearest-neighbor sampling.
         """
 
-        # Precompute trig
         theta = math.radians(angle)
         cos_t = math.cos(theta)
         sin_t = math.sin(theta)
 
-        # Original image dimensions and pivot
-        w, h = self.width, self.height
         px, py = pivot
 
-        # Compute positions of corners relative to pivot
-        corners = [
-            (-px, -py),
-            (w - px, -py),
-            (-px, h - py),
-            (w - px, h - py)
-        ]
-
-        # Rotate corners to find extents
-        xs = []
-        ys = []
-        for x_rel, y_rel in corners:
-            x_rot = x_rel * cos_t - y_rel * sin_t
-            y_rot = x_rel * sin_t + y_rel * cos_t
-            xs.append(x_rot)
-            ys.append(y_rot)
-
-        min_x = min(xs)
-        max_x = max(xs)
-        min_y = min(ys)
-        max_y = max(ys)
-
-        # New canvas size
-        new_w = int(math.ceil(max_x - min_x))
-        new_h = int(math.ceil(max_y - min_y))
-
-        # Offsets to map dst coords into rotated space
-        x_off = -min_x
-        y_off = -min_y
-
         def to_rotate(dx, dy, util):
-            # Map dst pixel to rotated coordinates (relative to pivot)
-            x_rot = dx - x_off
-            y_rot = dy - y_off
+            # Map destination pixel to pivot-centered coords
+            x_rot = dx - px
+            y_rot = dy - py
 
-            # Inverse rotation to get original relative coords
+            # Inverse-rotate back to source-centered coords
             x_rel = x_rot * cos_t + y_rot * sin_t
             y_rel = -x_rot * sin_t + y_rot * cos_t
 
-            # Map back to original image coords
+            # Translate back into original image space
             src_x = int(round(x_rel + px))
             src_y = int(round(y_rel + py))
 
-            # Fetch pixel or black
-            if 0 <= src_x < w and 0 <= src_y < h:
+            # Nearest-neighbor fetch or black
+            if 0 <= src_x < self.width and 0 <= src_y < self.height:
                 return util.pixels[src_x, src_y]
             else:
-                return (0, 0, 0)
+                return 0, 255, 0
 
-        return self._transform_pixels(to_rotate, (new_w, new_h))
+        return self._transform_pixels(to_rotate)
+
+    ## Ex 3) Scaling
+    @staticmethod
+    def get_scaled_coordinates(x, y, x_factor, y_factor=None):
+        if y_factor is None:
+            y_factor = x_factor
+        return x * x_factor, y * y_factor
+
+    @staticmethod
+    def get_unscaled_coordinates(x_scaled, y_scaled, x_factor, y_factor=None):
+        if y_factor is None:
+            y_factor = x_factor
+        return round(x_scaled / x_factor), round(y_scaled / y_factor)
+
+    def scale(self, x_factor, y_factor=None):
+        """
+        Resize the image by (x_factor, y_factor) using nearest‐neighbor sampling.
+        """
+        if y_factor is None:
+            y_factor = x_factor
+
+        # Compute destination size
+        dst_w = round(self.width * x_factor)
+        dst_h = round(self.height * y_factor)
+
+        def to_scale(dx, dy, util):
+            # Map the destination pixel back to source coords
+            src_x, src_y = ImgUtil.get_unscaled_coordinates(dx, dy, x_factor, y_factor)
+
+            # Nearest‐neighbor: fetch pixel if in bounds, else black
+            if 0 <= src_x < self.width and 0 <= src_y < self.height:
+                return util.pixels[src_x, src_y]
+            else:
+                return 0, 0, 0
+
+        return self._transform_pixels(to_scale, dst_size=(dst_w, dst_h))
+
+    def scale_bilinear(self, x_factor, y_factor=None):
+        """
+        Resize the image by (x_factor, y_factor) using bilinear interpolation.
+        If y_factor is None, uses x_factor for both dimensions.
+        """
+        if y_factor is None:
+            y_factor = x_factor
+
+        # Compute output dimensions
+        dst_w = round(self.width * x_factor)
+        dst_h = round(self.height * y_factor)
+
+        def to_bilinear(dx, dy, util):
+            # 1) Map destination to exact source float coords
+            src_xf = dx / x_factor
+            src_yf = dy / y_factor
+
+            # 2) Identify the 4 surrounding pixel indices
+            x0 = math.floor(src_xf)
+            y0 = math.floor(src_yf)
+            x1 = x0 + 1
+            y1 = y0 + 1
+
+            # 3) Compute the fractional part
+            wx = src_xf - x0
+            wy = src_yf - y0
+
+            # 4) Fetch the four neighbours, clamping at borders
+            def clamp(v, max_v):
+                return max(0, min(v, max_v))
+
+            x0c = clamp(x0, self.width - 1)
+            x1c = clamp(x1, self.width - 1)
+            y0c = clamp(y0, self.height - 1)
+            y1c = clamp(y1, self.height - 1)
+
+            p00 = util.pixels[x0c, y0c]
+            p10 = util.pixels[x1c, y0c]
+            p01 = util.pixels[x0c, y1c]
+            p11 = util.pixels[x1c, y1c]
+
+            # 5) Compute weights
+            w00 = (1 - wx) * (1 - wy)
+            w10 = wx * (1 - wy)
+            w01 = (1 - wx) * wy
+            w11 = wx * wy
+
+            # 6) Blend each channel
+            r = round(p00[0] * w00 + p10[0] * w10 + p01[0] * w01 + p11[0] * w11)
+            g = round(p00[1] * w00 + p10[1] * w10 + p01[1] * w01 + p11[1] * w11)
+            b = round(p00[2] * w00 + p10[2] * w10 + p01[2] * w01 + p11[2] * w11)
+
+            return (r, g, b)
+
+        return self._transform_pixels(to_bilinear, dst_size=(dst_w, dst_h))
