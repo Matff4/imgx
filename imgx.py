@@ -30,6 +30,7 @@ if __name__ == '__main__':
     """
 
     ## Ex 3) Scaling
+    """
     scaled_x, scaled_y = orig.get_scaled_coordinates(40, 20, 0.75, 0.75)
     print(f"Scaled coordinates: {scaled_x}, {scaled_y}")
     unscaled_x, unscaled_y = orig.get_unscaled_coordinates(30, 15, 0.75, 0.75)
@@ -43,7 +44,10 @@ if __name__ == '__main__':
     scaled_bi = orig.scale_bilinear(0.15, 0.15).save("output/small_bilinear.png")
     big_bi = ImgUtil("output/small_bilinear.png")
     big_bi.scale_bilinear(15, 15).save("output/big_bilinear.png")
+    """
 
+    orig.show_histogram(mode='RGB', return_equalized=True).save("output/equalized_rgb.png")
+    orig.show_histogram(mode='brightness', return_equalized=True).save("output/equalized_grayscale.png")
 
 
 

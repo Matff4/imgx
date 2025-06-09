@@ -1,5 +1,7 @@
 from PIL import Image
 import math
+import numpy as np
+import matplotlib.pyplot as plt
 
 
 class ImgUtil:
@@ -322,3 +324,104 @@ class ImgUtil:
             return (r, g, b)
 
         return self._transform_pixels(to_bilinear, dst_size=(dst_w, dst_h))
+
+    ## Ex 6) Histogram
+    def compute_histogram(self, mode='brightness'):
+        """
+        Compute a normalized histogram.
+        mode: 'brightness' for luminance, 'RGB' for separate RGB channels.
+        Returns:
+          - brightness: 1D numpy array (256,) normalized
+          - RGB: dict with keys 'R','G','B', each a normalized array
+        """
+        bins = np.arange(257)
+        if mode == 'brightness':
+            vals = [(r+g+b)//3 for x, y, (r, g, b) in self._iterate_pixels()]
+            counts, _ = np.histogram(vals, bins=bins)
+            return counts / counts.max()
+        elif mode == 'RGB':
+            chans = {'R': [], 'G': [], 'B': []}
+            for x, y, (r, g, b) in self._iterate_pixels():
+                chans['R'].append(r)
+                chans['G'].append(g)
+                chans['B'].append(b)
+            hists = {}
+            for c in chans:
+                counts, _ = np.histogram(chans[c], bins=bins)
+                hists[c] = counts / counts.max()
+            return hists
+        else:
+            raise ValueError("mode must be 'brightness' or 'RGB'")
+
+    def show_histogram(self, mode='brightness', return_equalized=False):
+        """
+        Plot the histogram using matplotlib.
+        mode: 'brightness' or 'RGB'.
+        return_equalized: if True, returns the contrast-stretched PIL Image (does not display it).
+        Returns:
+          - None (if return_equalized=False)
+          - PIL.Image of stretched image (if return_equalized=True)
+        """
+        data = self.compute_histogram(mode)
+        plt.figure(figsize=(8, 4))
+        if mode == 'brightness':
+            plt.plot(data, label='Brightness', color='black')
+            plt.title("Normalized Brightness Histogram")
+            plt.xlabel("Pixel Value (0–255)")
+            plt.ylabel("Normalized Count")
+            plt.legend()
+        else:
+            for color in ('R', 'G', 'B'):
+                plt.plot(data[color], label=color, color=color.lower())
+            plt.title("Normalized RGB Histograms")
+            plt.xlabel("Pixel Value (0–255)")
+            plt.ylabel("Normalized Count")
+            plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+        if return_equalized:
+            stretch_mode = 'grayscale' if mode == 'brightness' else 'RGB'
+            eq_img = self.contrast_stretch(mode=stretch_mode)
+            return eq_img
+        return None
+
+    # ===== Contrast Stretching (Histogram Equalization) =====
+    def contrast_stretch(self, mode='grayscale'):
+        """
+        Linearly remap pixel values so that the darkest becomes 0
+        and the brightest becomes 255.
+        mode: 'grayscale' or 'RGB'.
+        Returns a new PIL Image.
+        """
+        if mode == 'grayscale':
+            vals = [(r+g+b)//3 for x, y, (r, g, b) in self._iterate_pixels()]
+            min_v, max_v = min(vals), max(vals)
+
+            def map_gray(x, y, util):
+                r, g, b = util.pixels[x, y]
+                gray = (r+g+b)//3
+                out = round((gray - min_v) * 255 / (max_v - min_v))
+                return out, out, out
+
+            return self._transform_pixels(map_gray)
+
+        elif mode == 'RGB':
+            R, G, B = [], [], []
+            for x, y, (r, g, b) in self._iterate_pixels():
+                R.append(r); G.append(g); B.append(b)
+            min_r, max_r = min(R), max(R)
+            min_g, max_g = min(G), max(G)
+            min_b, max_b = min(B), max(B)
+
+            def map_rgb(x, y, util):
+                r, g, b = util.pixels[x, y]
+                r2 = round((r - min_r) * 255 / (max_r - min_r))
+                g2 = round((g - min_g) * 255 / (max_g - min_g))
+                b2 = round((b - min_b) * 255 / (max_b - min_b))
+                return r2, g2, b2
+
+            return self._transform_pixels(map_rgb)
+
+        else:
+            raise ValueError("mode must be 'grayscale' or 'RGB'")
